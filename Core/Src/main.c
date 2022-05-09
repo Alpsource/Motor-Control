@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <assert.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -63,7 +64,7 @@ DMA_HandleTypeDef hdma_usart1_tx;
 
 /* USER CODE BEGIN PV */
 
-char txBuffer[32];
+char txBuffer[256];
 uint8_t transmitFlag=1;
 float dummy = 2.45;
 float Amp = (encoderStep_per_rev/reduction_ratio)*mm_per_rev;
@@ -87,8 +88,15 @@ static void MX_TIM3_Init(void);
 uint32_t counter = 0;
 int16_t count = 0;
 float position =0;
+float target=30000;
 
 int elapsedTime=0;
+
+PID_t pid = {
+		.Kp = 50.0f,
+		.Ki = 0.0f,
+		.Kd = 0.1f
+};
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 
@@ -118,9 +126,9 @@ void setPwm(float control)
 
 	fCCR = fabsf(control);
 
-	if (fCCR > ((float)0xFFFF))
+	if (fCCR > ((float)0xFFF0))
 	{
-		u16CCR = 0xFFFF;
+		u16CCR = 0xFFF0;
 	}
 	else
 	{
@@ -129,11 +137,13 @@ void setPwm(float control)
 
 	/**/ if (control > 0.0f)
 	{
-		HAL_GPIO_WritePin(DIR_GPIO_Port, DIR_Pin, GPIO_PIN_SET);
+		HAL_GPIO_WritePin(J_DIR_GPIO_Port, J_DIR_Pin, GPIO_PIN_SET);
+		HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
 	}
 	else if (control < 0.0f)
 	{
-		HAL_GPIO_WritePin(DIR_GPIO_Port, DIR_Pin, GPIO_PIN_RESET);
+		HAL_GPIO_WritePin(J_DIR_GPIO_Port, J_DIR_Pin, GPIO_PIN_RESET);
+		HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 	}
 	else
 	{
@@ -180,6 +190,9 @@ int main(void)
 
   HAL_TIM_Encoder_Start_IT(&htim2, TIM_CHANNEL_ALL);
 	//HAL_UART_Receive_DMA(&huart1,txBuffer,1);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+
+  //setPwm(65500);
 
   /* USER CODE END 2 */
 
@@ -190,8 +203,12 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	//continue;
 		if(transmitFlag){
-			int ret =snprintf(txBuffer, sizeof txBuffer, "\f %.4f \n \r", position);
+			target = 1000*sin(2*M_PI*0.001*0.5*(float)HAL_GetTick());
+			setPwm(PID_update(&pid,  target - position));
+
+			int ret =snprintf(txBuffer, sizeof txBuffer, "\f %.4f %.4f\n\r", position, target);
 			//dummy += 0.0001;
 
 			if (ret < 0) {
@@ -200,15 +217,12 @@ int main(void)
 			if (ret >= sizeof txBuffer) {
 				return 1;
 					/* Result was truncated - resize the buffer and retry.*/
-			
-			
 			}
 			//HAL_UART_Transmit_DMA(&huart1,(uint8_t *)txBuffer,32);
-			HAL_UART_Transmit(&huart1,(uint8_t *)txBuffer,32,10);
-			HAL_GPIO_TogglePin(GPIOC,GPIO_PIN_13);
+			HAL_UART_Transmit(&huart1,(uint8_t *)txBuffer,ret,10);
+			//HAL_GPIO_TogglePin(GPIOC,GPIO_PIN_13);
 			
-			transmitFlag=0;
-			HAL_Delay(10);
+			//transmitFlag=0;
 
 		}
   }
@@ -340,7 +354,7 @@ static void MX_TIM3_Init(void)
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
   sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCFastMode = TIM_OCFAST_ENABLE;
   if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
   {
     Error_Handler();
