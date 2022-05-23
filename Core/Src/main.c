@@ -40,13 +40,6 @@ typedef struct PID_t {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define mm_per_rev 8.0f
-#define reduction_ratio 624.0f/35.0f
-#define encoderStep_per_rev 512.0f
-
-#define ENCODER_COUNTS
-#define MOTOR_GEAR_RATIO
-#define SHAFT_PITCH
 #define COUNTS_PER_CM 0.000087f
 /* USER CODE END PD */
 
@@ -60,15 +53,16 @@ typedef struct PID_t {
 TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
-DMA_HandleTypeDef hdma_usart1_tx;
+DMA_HandleTypeDef hdma_usart1_rx;
 
 /* USER CODE BEGIN PV */
 
 char txBuffer[256];
+char rxBuffer[7];
 uint8_t transmitFlag=0;
 uint8_t armed=0;
 float dummy = 2.45;
-float Amp = (512.0/(624.0/35.0))*8.0;
+float Amp =0;
 
 /* USER CODE END PV */
 
@@ -90,26 +84,39 @@ uint32_t counter = 0;
 int16_t count = 0;
 int position =0;
 float positionf;
-float target=30000;
+float target=0;
+float targetCM=0;
 float freq= 1.15f;
 int ret;
 int elapsedTime=0;
+
+char resetArr[7]="reset!!";
 
 PID_t pid = {
 		.Kp = 50.0f,
 		.Ki = 0.0f,
 		.Kd = 0.0f
 };
-/*
-void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
-
-	if(htim->Instance==TIM2){
-	counter = __HAL_TIM_GET_COUNTER(htim);
-	count = (int16_t) counter;
-		position = count;
-
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
+	int detect = 1;
+	for(int i =0;i<7;i++){
+		if(rxBuffer[i] != resetArr[i]){
+			detect = 0;
+			break;
+		}
 	}
-}*/
+	if(detect){
+		elapsedTime=0;
+		targetCM=0;
+	}
+	else{
+		sscanf(rxBuffer,"%f",&targetCM);
+		//memset(rxBuffer, 0, 6 * (sizeof rxBuffer[0]) );
+	}
+
+	HAL_UART_Receive_DMA(&huart1,(uint8_t *)rxBuffer,7);
+	transmitFlag=1;
+}
 
 float PID_update(PID_t *pid, float error)
 {
@@ -192,9 +199,11 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   //HAL_TIM_Encoder_Start_IT(&htim2, TIM_CHANNEL_ALL);
-	//HAL_UART_Receive_DMA(&huart1,txBuffer,1);
-  Amp = (1/(512.0*(624.0/35.0)))*8.0;
+  HAL_UART_Receive_DMA(&huart1,(uint8_t *)rxBuffer,7);
+  Amp = (1/(512.0*(624.0/35.0)))*8.0; // mm_per_step
+
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+  HAL_TIM_Base_Start_IT(&htim4);
 
   //setPwm(65500);
 
@@ -207,10 +216,11 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	//continue;
-		if(transmitFlag){
-			target = (10*(1/Amp))/(2*M_PI*freq)*sin(2*M_PI*0.001*freq*(float)elapsedTime);
+
+			//target = (10*(1/Amp))/(2*M_PI*freq)*sin(2*M_PI*0.001*freq*(float)elapsedTime);
+			target=(10/Amp)*targetCM;
 			setPwm(PID_update(&pid,  (float)target - position));
+		if(transmitFlag){
 			positionf= position;
 
 			ret =snprintf(txBuffer, sizeof txBuffer, "\f %.4f %.4f\n\r", positionf, target);
@@ -224,20 +234,19 @@ int main(void)
 					/* Result was truncated - resize the buffer and retry.*/
 			}
 			//HAL_UART_Transmit_DMA(&huart1,(uint8_t *)txBuffer,32);
-			HAL_UART_Transmit(&huart1,(uint8_t *)txBuffer,256,100);
-			//HAL_GPIO_TogglePin(GPIOC,GPIO_PIN_13);
+			HAL_UART_Transmit(&huart1,(uint8_t *)txBuffer,ret,100);
 			
-			//transmitFlag=0;
+			transmitFlag=0;
 
 		}
-		if(!armed){
-			if(!HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8)){
-				elapsedTime=0;
-				TIM4->CNT=0;
-				transmitFlag=1;
-				armed = 1;
-			}
-		}
+//		if(!armed){
+//			if(!HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8)){
+//				elapsedTime=0;
+//				TIM4->CNT=0;
+//				transmitFlag=1;
+//				armed = 1;
+//			}
+//		}
   }
   /* USER CODE END 3 */
 }
@@ -418,9 +427,9 @@ static void MX_DMA_Init(void)
   __HAL_RCC_DMA1_CLK_ENABLE();
 
   /* DMA interrupt init */
-  /* DMA1_Channel4_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
+  /* DMA1_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
 
 }
 
