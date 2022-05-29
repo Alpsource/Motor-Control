@@ -31,6 +31,7 @@
 typedef struct PID_t {
 	float error;		// Current error value.
 	float esum;			// Sum of error values.
+	float esumLimit;	// Limit for integral.
 	float ediff;		// First difference of error values.
 	float Kp, Ki, Kd;	// Control constants.
 	float control;		// Control signal.
@@ -61,8 +62,9 @@ char txBuffer[256];
 char rxBuffer[7];
 uint8_t transmitFlag=0;
 uint8_t armed=0;
+uint8_t targetUpdate=0;
 float dummy = 2.45;
-float Amp =0;
+double Amp =0;
 
 /* USER CODE END PV */
 
@@ -84,9 +86,9 @@ uint32_t counter = 0;
 int16_t count = 0;
 int position =0;
 float positionf;
-float target=0;
-float targetCM=0;
-float freq= 1.15f;
+double target=0;
+double targetCM=0;
+double freq= 1.15f;
 int ret;
 int elapsedTime=0;
 
@@ -94,29 +96,10 @@ char resetArr[7]="reset!!";
 
 PID_t pid = {
 		.Kp = 50.0f,
-		.Ki = 0.0f,
-		.Kd = 0.0f
+		.Ki = 0.5f,
+		.Kd = 0.0f,
+		.esumLimit = 60000.0f
 };
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
-	int detect = 1;
-	for(int i =0;i<7;i++){
-		if(rxBuffer[i] != resetArr[i]){
-			detect = 0;
-			break;
-		}
-	}
-	if(detect){
-		elapsedTime=0;
-		targetCM=0;
-	}
-	else{
-		sscanf(rxBuffer,"%f",&targetCM);
-		//memset(rxBuffer, 0, 6 * (sizeof rxBuffer[0]) );
-	}
-
-	HAL_UART_Receive_DMA(&huart1,(uint8_t *)rxBuffer,7);
-	transmitFlag=1;
-}
 
 float PID_update(PID_t *pid, float error)
 {
@@ -124,9 +107,15 @@ float PID_update(PID_t *pid, float error)
 
 	pid->ediff = error - pid->error;
 	pid->esum += error;
+	if(fabs(pid->esum)>pid->esumLimit) pid->esum=pid->esumLimit;
 	pid->error = error;
 
 	return (pid->control = (pid->Kp * pid->error) + (pid->Ki * pid->esum) + (pid->Kd * pid->ediff));
+}
+void PID_reset(PID_t *pid){
+	assert(pid);
+
+	pid->esum=0;
 }
 
 void setPwm(float control)
@@ -160,6 +149,31 @@ void setPwm(float control)
 		u16CCR = 0;
 	}
 	TIM3->CCR1 = u16CCR;
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
+	int detect = 1;
+	for(int i =0;i<7;i++){
+		if(rxBuffer[i] != resetArr[i]){
+			detect = 0;
+			break;
+		}
+	}
+	if(detect){
+		elapsedTime=0;
+		targetCM=0;
+		target =0;
+	}
+	else{
+		sscanf(rxBuffer,"%lf",&targetCM); // For cm input, driving by uart
+		targetUpdate=1;
+		//sscanf(rxBuffer,"%lf",&freq); // For frequency update, driving by interrupt (EXTI8)
+		//memset(rxBuffer, 0, 6 * (sizeof rxBuffer[0]) );
+	}
+
+	HAL_UART_Receive_DMA(&huart1,(uint8_t *)rxBuffer,7);
+	PID_reset(&pid);
+	transmitFlag=1;
 }
 
 /* USER CODE END 0 */
@@ -217,28 +231,38 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-			//target = (10*(1/Amp))/(2*M_PI*freq)*sin(2*M_PI*0.001*freq*(float)elapsedTime);
-			target=(10/Amp)*targetCM;
-			setPwm(PID_update(&pid,  (float)target - position));
+	  // Update Target Point Every UART RECEIVE Interrupt
+	  if(targetUpdate){
+		  PID_reset(&pid);
+		  target=(10/Amp)*targetCM; // Using target point(cm) from UART
+		  //target = (10*(1/Amp))/(2*M_PI*freq)*sin(2*M_PI*freq*(float)elapsedTime); // Using EXTI Int
+		  targetUpdate = 0;
+	  }
+
+	  // PID Calculation and PWM Generation
+	  if(armed){
+		setPwm(PID_update(&pid,  (float)target - position));
+		armed =0;
+	  }
+
+		// UART Data Transmit
 		if(transmitFlag){
 			positionf= position;
 
 			ret =snprintf(txBuffer, sizeof txBuffer, "\f %.4f %.4f\n\r", positionf, target);
-			//dummy += 0.0001;
 
 			if (ret < 0) {
-					return -1;
+					return -1; /* Failed*/
 			}
 			if (ret >= sizeof txBuffer) {
-				return 1;
-					/* Result was truncated - resize the buffer and retry.*/
+				return 1;/* Result was truncated - resize the buffer and retry.*/
 			}
-			//HAL_UART_Transmit_DMA(&huart1,(uint8_t *)txBuffer,32);
 			HAL_UART_Transmit(&huart1,(uint8_t *)txBuffer,ret,100);
 			
 			transmitFlag=0;
 
 		}
+
 //		if(!armed){
 //			if(!HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8)){
 //				elapsedTime=0;
@@ -482,12 +506,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PB8 */
-  GPIO_InitStruct.Pin = GPIO_PIN_8;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);

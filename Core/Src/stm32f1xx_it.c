@@ -63,6 +63,7 @@ extern int elapsedTime;
 extern int position;
 extern uint8_t transmitFlag;
 extern uint8_t armed;
+extern uint8_t targetUpdate;
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -264,6 +265,7 @@ void DMA1_Channel5_IRQHandler(void)
 void TIM4_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM4_IRQn 0 */
+	armed = 1;
 
   /* USER CODE END TIM4_IRQn 0 */
   HAL_TIM_IRQHandler(&htim4);
